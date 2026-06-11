@@ -1,11 +1,11 @@
-# app.py
+ app.py
 import streamlit as st
 import pandas as pd
 import mysql.connector
 import joblib
 import numpy as np
 import re
-from datetime import date
+from datetime import date, datetime
 
 # -----------------------------
 # PAGE CONFIG
@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS patients (
     id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(100),
     dob DATE,
-    email VARCHAR(100),
+    email VARCHAR(100) UNIQUE,
     glucose FLOAT,
     haemoglobin FLOAT,
     cholesterol FLOAT,
@@ -56,11 +56,29 @@ def validate_email(email: str) -> bool:
     pattern = r'^[\w\.-]+@[\w\.-]+\.\w+$'
     return re.match(pattern, email) is not None
 
-def validate_dob(dob: date) -> bool:
-    return date(1985, 1, 1) <= dob <= date(2035, 12, 31)
+def parse_and_validate_dob(dob_str: str):
+    try:
+        dob = datetime.strptime(dob_str, "%d-%m-%Y").date()
+    except ValueError:
+        return None
+    # Range check
+    if not (date(1960, 1, 1) <= dob <= date(2035, 12, 31)):
+        return None
+    # Future check
+    if dob > date.today():
+        return None
+    return dob
+
+def is_unique_email(email: str, patient_id: int = None) -> bool:
+    if patient_id:
+        cursor.execute("SELECT COUNT(*) FROM patients WHERE email=%s AND id<>%s", (email, patient_id))
+    else:
+        cursor.execute("SELECT COUNT(*) FROM patients WHERE email=%s", (email,))
+    count = cursor.fetchone()[0]
+    return count == 0
 
 def validate_blood_values(glucose, haemoglobin, cholesterol) -> bool:
-    return (70 <= glucose <= 200) and (10 <= haemoglobin <= 17) and (150 <= cholesterol <= 300)
+    return True
 
 # -----------------------------
 # PREDICTION FUNCTION
@@ -98,12 +116,7 @@ if choice == "Add Patient":
 
     with st.form("add_form"):
         full_name = st.text_input("Full Name")
-        dob = st.date_input(
-            "Date of Birth",
-            value=date(1985, 1, 1),
-            min_value=date(1985, 1, 1),
-            max_value=date(2035, 12, 31)
-        )
+        dob_str = st.text_input("Date of Birth (DD-MM-YYYY)")
         email = st.text_input("Email Address")
         glucose = st.number_input("Glucose", min_value=0.0, format="%.2f")
         haemoglobin = st.number_input("Haemoglobin", min_value=0.0, format="%.2f")
@@ -111,14 +124,15 @@ if choice == "Add Patient":
         submit = st.form_submit_button("Predict & Save")
 
     if submit:
+        dob = parse_and_validate_dob(dob_str)
         if full_name.strip() == "":
             st.error("Full Name is required")
         elif not validate_email(email):
-            st.error("Invalid Email Address")
-        elif not validate_dob(dob):
-            st.error("DOB must be between 1985 and 2035")
-        elif not validate_blood_values(glucose, haemoglobin, cholesterol):
-            st.error("Values out of valid range (Glucose 70–200, Haemoglobin 10–17, Cholesterol 150–300)")
+            st.error("Invalid Email Address. Example: name@example.com")
+        elif dob is None:
+            st.error("Invalid DOB")
+        elif not is_unique_email(email):
+            st.error("Duplicate record. Same email already exists.")
         else:
             remark = predict_health(glucose, haemoglobin, cholesterol)
             cursor.execute("""
@@ -160,12 +174,7 @@ elif choice == "Update Patient":
 
         with st.form("update_form"):
             full_name = st.text_input("Full Name", patient[1])
-            dob = st.date_input(
-                "Date of Birth",
-                value=patient[2],
-                min_value=date(1985, 1, 1),
-                max_value=date(2035, 12, 31)
-            )
+            dob_str = st.text_input("Date of Birth (DD-MM-YYYY)", patient[2].strftime("%d-%m-%Y"))
             email = st.text_input("Email", patient[3])
             glucose = st.number_input("Glucose", value=patient[4])
             haemoglobin = st.number_input("Haemoglobin", value=patient[5])
@@ -173,12 +182,13 @@ elif choice == "Update Patient":
             update_btn = st.form_submit_button("Update")
 
         if update_btn:
+            dob = parse_and_validate_dob(dob_str)
             if not validate_email(email):
-                st.error("Invalid Email Address")
-            elif not validate_dob(dob):
-                st.error("DOB must be between 1985 and 2035")
-            elif not validate_blood_values(glucose, haemoglobin, cholesterol):
-                st.error("Values out of valid range")
+                st.error("Invalid Email Address. Example: name@example.com")
+            elif dob is None:
+                st.error("Invalid DOB")
+            elif not is_unique_email(email, patient_id=selected_id):
+                st.error("Duplicate record. Same email already exists.")
             else:
                 remark = predict_health(glucose, haemoglobin, cholesterol)
                 cursor.execute("""
@@ -204,3 +214,5 @@ elif choice == "Delete Patient":
             cursor.execute("DELETE FROM patients WHERE id=%s", (selected_id,))
             conn.commit()
             st.warning(f"Patient ID {selected_id} deleted successfully")
+
+
